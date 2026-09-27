@@ -11,6 +11,71 @@
       </div>
     </header>
 
+    <section class="panel" data-block="ranking">
+      <header class="panel-head">
+        <h3>逆变器排行榜</h3>
+        <label class="filter-item">
+          <span>所属电站</span>
+          <select v-model="activePlant" @change="switchPlant">
+            <option value="">全部电站</option>
+            <option v-for="plant in plants" :key="plant" :value="plant">{{ plant }}</option>
+          </select>
+        </label>
+      </header>
+
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th v-for="column in rankColumns" :key="column">{{ column }}</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(row, index) in rankRows" :key="String(row['逆变器编号'])">
+            <td>{{ index + 1 }}</td>
+            <td>{{ row['逆变器编号'] }}</td>
+            <td>{{ row['逆变器型号'] ?? '—' }}</td>
+            <td>{{ row['所属电站'] ?? '—' }}</td>
+            <td>{{ row['运行时长'] ?? '—' }}</td>
+            <td>{{ row['告警次数'] ?? '—' }}</td>
+            <td>{{ row['评分'] ?? '未评分' }}</td>
+            <td>{{ row['评分时间'] ?? '—' }}</td>
+            <td class="row-actions">
+              <button class="link" type="button" @click="openDetail(String(row['逆变器编号']))">详情 / 评分</button>
+            </td>
+          </tr>
+          <tr v-if="!rankRows.length">
+            <td :colspan="rankColumns.length + 1" class="empty-state">当前电站暂无逆变器排行数据</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <section v-if="detail" class="panel" data-block="detail">
+        <header class="panel-head">
+          <h3>逆变器详情 · {{ detail['逆变器编号'] }}</h3>
+          <button class="btn ghost" type="button" @click="closeDetail">收起</button>
+        </header>
+        <div class="stat-row">
+          <article v-for="item in detailItems" :key="item.label" class="stat-card">
+            <span class="stat-label">{{ item.label }}</span>
+            <strong class="stat-value">{{ item.value }}</strong>
+          </article>
+        </div>
+        <form class="filter-bar" @submit.prevent="saveScore">
+          <label class="filter-item">
+            <span>评分（0-100）</span>
+            <input v-model="scoreForm.score" type="number" min="0" max="100" step="0.1" required />
+          </label>
+          <label class="filter-item">
+            <span>评分备注</span>
+            <input v-model="scoreForm.remark" placeholder="选填" />
+          </label>
+          <button class="btn primary" type="submit">保存评分</button>
+          <span v-if="scoreMessage" class="error-text">{{ scoreMessage }}</span>
+        </form>
+      </section>
+    </section>
+
     <div class="stat-row">
       <article v-for="item in stats" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
@@ -63,7 +128,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
@@ -80,6 +145,31 @@ const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+// 排行榜、详情、评分都按逆变器编号取数，不再各自维护一套设备关联。
+const rankColumns = ["排名", "逆变器编号", "逆变器型号", "所属电站", "运行时长", "告警次数", "评分", "评分时间"]
+const plants = ref<string[]>([])
+const activePlant = ref('')
+const rankRows = ref<Row[]>([])
+const detail = ref<Row | null>(null)
+const scoreForm = ref({ score: '', remark: '' })
+const scoreMessage = ref('')
+
+const detailItems = computed(() => {
+  if (!detail.value) {
+    return []
+  }
+  const source = detail.value
+  return [
+    { label: '逆变器编号', value: source['逆变器编号'] ?? '—' },
+    { label: '逆变器型号', value: source['逆变器型号'] ?? '—' },
+    { label: '所属电站', value: source['所属电站'] ?? '—' },
+    { label: '运行时长', value: source['运行时长'] ?? '—' },
+    { label: '告警次数', value: source['告警次数'] ?? '—' },
+    { label: '当前评分', value: source['评分'] ?? '未评分' },
+    { label: '评分时间', value: source['评分时间'] ?? '—' },
+  ]
+})
 
 function resetFilters() {
   filters.value = {}
@@ -105,6 +195,7 @@ async function runAction(action: string, row: Row) {
       throw new Error('逆变器管理动作未生效，请稍后重试')
     }
     await reload()
+    await reloadRanking()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '逆变器管理操作失败'
   }
@@ -126,5 +217,119 @@ async function reload() {
   }
 }
 
-onMounted(reload)
+function switchPlant() {
+  // 切换电站时先清空旧排行与详情，再按新电站拉取，避免上一电站的评分残留。
+  rankRows.value = []
+  detail.value = null
+  scoreMessage.value = ''
+  void reloadRanking()
+}
+
+async function reloadPlants() {
+  try {
+    const response = await request(`${ENDPOINT}/plants`)
+    if (!response.ok) {
+      throw new Error('电站列表读取失败')
+    }
+    const payload = await response.json()
+    plants.value = payload.items ?? []
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '电站列表读取失败'
+  }
+}
+
+async function reloadRanking() {
+  errorMessage.value = ''
+  const query = activePlant.value ? `?plant=${encodeURIComponent(activePlant.value)}` : ''
+  try {
+    const response = await request(`${ENDPOINT}/ranking${query}`)
+    if (!response.ok) {
+      throw new Error('逆变器排行榜读取失败')
+    }
+    const payload = await response.json()
+    rankRows.value = payload.items ?? []
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '逆变器排行榜读取失败'
+  }
+}
+
+async function openDetail(deviceNo: string) {
+  scoreMessage.value = ''
+  try {
+    const response = await request(`${ENDPOINT}/ranking/${encodeURIComponent(deviceNo)}`)
+    if (!response.ok) {
+      throw new Error('逆变器详情读取失败')
+    }
+    detail.value = await response.json()
+    scoreForm.value = {
+      score: detail.value?.['评分'] != null ? String(detail.value['评分']) : '',
+      remark: '',
+    }
+  } catch (error) {
+    scoreMessage.value = error instanceof Error ? error.message : '逆变器详情读取失败'
+  }
+}
+
+function closeDetail() {
+  detail.value = null
+  scoreMessage.value = ''
+}
+
+async function saveScore() {
+  if (!detail.value) {
+    return
+  }
+  scoreMessage.value = ''
+  const deviceNo = String(detail.value['逆变器编号'])
+  try {
+    const response = await request(`${ENDPOINT}/ranking/${encodeURIComponent(deviceNo)}/score`, {
+      method: 'POST',
+      body: JSON.stringify({
+        values: { score: Number(scoreForm.value.score), remark: scoreForm.value.remark },
+      }),
+    })
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.message || '评分保存失败')
+    }
+    // 读回结果直接来自服务端同一份数据，排行与详情保持一致。
+    detail.value = payload.entry
+    scoreForm.value = {
+      score: payload.entry?.['评分'] != null ? String(payload.entry['评分']) : '',
+      remark: '',
+    }
+    await reloadRanking()
+  } catch (error) {
+    scoreMessage.value = error instanceof Error ? error.message : '评分保存失败'
+  }
+}
+
+onMounted(() => {
+  void reload()
+  void reloadPlants()
+  void reloadRanking()
+})
 </script>
+
+<style scoped>
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+  background: #fff;
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.panel-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+</style>

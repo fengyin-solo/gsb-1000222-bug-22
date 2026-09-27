@@ -30,6 +30,47 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+@router.get("/plants", response_model=dict)
+def list_plants() -> dict:
+    """电站切换下拉选项：与排行同源，直接取自逆变器行的所属电站。"""
+    return {"items": service.list_plants()}
+
+
+@router.get("/ranking", response_model=dict)
+def ranking(plant: str | None = Query(default=None, description="按所属电站过滤，缺省为全部电站")) -> dict:
+    """逆变器排行榜：按设备编号关联评分，切换电站时不会带出上一电站的残留评分。"""
+    items = service.ranking(plant)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/ranking/{device_no}", response_model=dict)
+def ranking_detail(device_no: str) -> dict:
+    """单台逆变器详情：按逆变器编号读取，与排行榜、评分读回看到的是同一份数据。"""
+    entry = service.device_detail(device_no)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"逆变器 {device_no} 不存在或已归档")
+    return entry
+
+
+@router.post("/ranking/{device_no}/score", response_model=ActionResult)
+def save_score(device_no: str, payload: EntryPayload) -> ActionResult:
+    """保存评分：同一设备只保留一份最新评分，返回的读回结果与排行、详情同源。"""
+    raw_score = payload.values.get("score")
+    try:
+        score = float(raw_score)
+    except (TypeError, ValueError):
+        return ActionResult(ok=False, message="评分需为 0-100 的数字")
+    entry, message = service.save_score(
+        device_no,
+        score,
+        remark=str(payload.values.get("remark") or ""),
+        operator=str(payload.values.get("operator") or ""),
+    )
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条逆变器明细；不存在时给出可读的错误说明。"""

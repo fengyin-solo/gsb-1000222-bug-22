@@ -14,12 +14,17 @@ class Store:
         self._tables: dict[str, list[dict[str, Any]]] = {
             name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
         }
+        self._buckets: dict[str, dict[str, dict[str, Any]]] = {}
 
     def module_names(self) -> list[str]:
         return sorted(self._tables)
 
     def rows(self, module: str) -> list[dict[str, Any]]:
         return self._tables.setdefault(module, [])
+
+    def bucket(self, name: str) -> dict[str, dict[str, Any]]:
+        """按业务编号存取的附属记录桶（如设备评分），与列表行分开存放。"""
+        return self._buckets.setdefault(name, {})
 
     def find(self, module: str, entry_id: int) -> dict[str, Any] | None:
         for row in self.rows(module):

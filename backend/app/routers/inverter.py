@@ -1,4 +1,9 @@
-"""逆变器管理接口：维护逆变器，覆盖停机检查、复位告警、恢复运行等动作。"""
+"""逆变器管理接口：维护逆变器，覆盖停机检查、复位告警、恢复运行等动作。
+
+排行榜、设备详情、评分保存三个入口都按逆变器编号关联同一份数据；
+/ranking、/device、/score、/export 这类静态路径必须放在 /{entry_id} 之前，
+否则会被路径参数抢先匹配。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -14,6 +19,51 @@ service = InverterService()
 
 LIST_FIELDS = ["逆变器编号", "逆变器型号", "额定功率", "所属电站", "投产日期", "运行时长", "告警次数", "运行状态"]
 STATUSES = ["运行", "待机", "告警", "停机", "维修中"]
+
+
+@router.get("/ranking")
+def get_ranking(
+    station: str | None = Query(default=None, description="按所属电站过滤，缺省为全部电站"),
+) -> dict[str, Any]:
+    """逆变器排行榜：运行时长、告警次数与评分来自同一份按编号关联的数据。"""
+    items = service.ranking(station)
+    return {
+        "station": station or "",
+        "stations": service.stations(),
+        "items": items,
+        "total": len(items),
+    }
+
+
+@router.get("/device/{code}")
+def get_device(code: str) -> dict[str, Any]:
+    """按逆变器编号读取设备详情；不存在时给出可读的错误说明。"""
+    entry = service.device_detail(code)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"逆变器 {code} 不存在或已归档")
+    return entry
+
+
+@router.post("/score", response_model=ActionResult)
+def save_score(payload: EntryPayload) -> ActionResult:
+    """保存设备评分：按逆变器编号入账，一台设备只留最新一条；返回保存后的读回结果。"""
+    code = str(payload.values.get("逆变器编号") or "").strip()
+    entry, message = service.save_score(
+        code,
+        payload.values.get("评分"),
+        remark=str(payload.values.get("评语") or "").strip(),
+        operator=str(payload.values.get("评分人") or "").strip(),
+    )
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出逆变器管理清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "inverter", "total": total, "items": items}
 
 
 @router.get("", response_model=PageResult[dict])
@@ -56,10 +106,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出逆变器管理清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "inverter", "total": total, "items": items}
